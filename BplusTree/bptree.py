@@ -1,104 +1,255 @@
 import sys
 import struct
 
-class node:
-    def __init__(self, m :int = 1, p : list = None, r : int = None, isLeaf = True, parent : int = None, offset : int = None):
+class Node:
+    def __init__(self, m :int = 1, p : list = None, r : int = -1, isLeaf = True, offset : int = None):
         self.m = m  # # of keys
         self.p = p  # array of [key, left chile node] or [key, value]
-        self.r = r  # a pointer to the rightmost child node or right sibling node
+        self.r = r  # a pointer to the rightmost child node or right sibling node. if rightmost leaf node : -1
         self.isLeaf = isLeaf
-        self.parent = parent # pointer for parent. if root: None
-        self.offset = offset # self pointer
-        
+        self.offset = offset # self pointer. in memory only : readNode() fills it from the offset
+                             # it was asked to seek to, so it is never stored in the file.
+        # no parent pointer. the path from root is tracked by keyFind() and passed to split().
 
-def readNode(offset) -> node:
-    with open(ifile, 'rb') as f:
-        f.seek(rootOffset + offset)
+class FreeNode:
+    def __init__(self, offset, nextOffset = -1):
+        self.offset = offset            # in memory only, like Node.offset
+        self.nextOffset = nextOffset    # 8 bytes
+    
+# file function : readNode, readFreeNode, allocOffset, releaseOffset
+def readFreeNode(offset) -> FreeNode:
+        f.seek(HEADER_SIZE + offset)
+        data = f.read(NODE_SIZE)
+        #data read error
+        if len(data) != NODE_SIZE:
+            raise ValueError("Invalid freeNode size while reading")
+        nextOffset = struct.unpack('<q', data[:8])[0]
+
+        return FreeNode(offset, nextOffset)     # offset : the one we seeked to, not read from file
+def writeFreeNode(f, freeNode):
+        f.seek(HEADER_SIZE + freeNode.offset)
+        data = struct.pack(FREENODE_FORMAT, freeNode.nextOffset)
+        f.write(data)
+def readNode(offset) -> Node:
+        f.seek(HEADER_SIZE + offset)
         data = f.read(NODE_SIZE)
         #data read error
         if len(data) != NODE_SIZE:
             raise ValueError("Invalid node size while reading")
-        m, isLeaf, parent, r, myOffset, *p = struct.unpack(NODE_FORMAT, data)
-        p = list(zip(p[::2], p[1::2])) # make pair
+        m, isLeaf, r, *p = struct.unpack(NODE_FORMAT, data)
+        p = [list(pair) for pair in zip(p[::2], p[1::2])][:m] # make pair, drop unused slots
 
-        return node(m, p, r, isLeaf, parent, myOffset)
+        return Node(m, p, r, isLeaf, offset)
+def writeNode(f, node):
+            flat = [x for row in node.p for x in row]
+            flat += [0] * ((N - 1) * 2 - len(flat))         # pad unused slots
+            f.seek(HEADER_SIZE + node.offset)
+            data = struct.pack(NODE_FORMAT, node.m, node.isLeaf, node.r, *flat)
+            f.write(data)
+# alloc deleted node's offset. if doesnt exist, alloc new offset.
+def allocOffset() -> int :
+    global freeHeadOffset, newOffset
+    # no FreeNode
+    if freeHeadOffset == -1:
+        newOffset += NODE_SIZE
+        return newOffset - NODE_SIZE
+    else:
+        freeNode = readFreeNode(freeHeadOffset)
+        # update freeHeadOffset
+        freeHeadOffset = freeNode.nextOffset
+        return freeNode.offset
+def releaseOffset(f, offset): # release offset and make link to linked list of FreeNode.
+    if freeHeadOffset == -1:  
+        freeHeadOffset = offset
+        writeFreeNode(offset)       
+    else:
+        freeNode = readFreeNode(freeHeadOffset)
+        while(True):
+            if freeNode.nextOffset == -1:
+                freeNode.nextOffset = offset
 
-def genOffset() -> int :...
+def patchHeader(f):
+        f.seek(0)
+        data = struct.pack('<qqqq', newOffset, freeHeadOffset, rootOffset, N)
+        f.write(data)
+def patchNode(f, modified : dict[int, list]):
+    for key in modified:
+        node, stat = modified[key]
+        if stat == 'del':
+            releaseOffset(f, node.offset)
+        if stat == 'mod':
+            writeNode(f, node)
 
-def keyFind(n :node, key) -> node: # find the locate of key and return that node recursively
+def patch(modified):
+        patchHeader(f)
+        patchNode(f, modified)
+
+
+
+def keyFind(n :Node, key, end = None, printing = False, path : list = None) -> Node: # find the locate of key and return that node recursively
+    # path : if given, the offsets of every node visited above the returned leaf are appended
+    #        (root first). split() uses it instead of a parent pointer.
     if n.isLeaf:
-        return n        # case1 : if n is leaf return the node
-    for i in n.p:
-        treeKey = i[0]
-        if key < treeKey: # case2 : if key < tree's key : go left child
-            keyFind(readNode(i[1]), key)
-        elif key >= treeKey: # case3 : else go right child
-            keyFind(n.r, key)
+        # Single Key Search
+        if printing and end == None:
+            exist = 0
+            print(*(i[0] for i in n.p), sep=',')
+            for k,v in n.p:
+                if k==key:
+                    print(v)
+                    exist = 1
+                    break
+            if not exist:
+                print('NOT FOUND')
 
-def split(n :node):   # when node overflowed, split node and make parent node, keep left node and create right node.
+        # Ranged Search
+        elif printing:
+            while(True):
+                i = 1
+                for k,v in n.p:
+
+                    # 종료조건
+                    if i == len(n.p):
+                        if k > end: 
+                            break
+                    #key, value 출력
+                    if key <= k <= end:
+                        print(k, v, sep=',')
+
+                    i+=1
+
+                if n.r != -1:
+                    n = readNode(n.r)
+                else:
+                    break
+
+        return n        # case1 : if n is leaf return the node. path holds its ancestors.
+
+    if printing and end == None:
+        print(*(i[0] for i in n.p), sep=',')
+                  
+    if path is not None:
+        path.append(n.offset)       # remember how we got here, in place of node.parent
+
+    for i in n.p:
+        if key < i[0]: # case2 : if key < tree's key : go left child
+            return keyFind(readNode(i[1]), key, end, printing, path)
+
+    # case3 : key is >= every key in this node : go rightmost child
+    return keyFind(readNode(n.r), key, end, printing, path)
+
+def split(n :Node, path : list):   # when node overflowed, split node and make parent node, keep left node and create right node.
+    # path : ancestor offsets of n, root first (from keyFind). pop() gives n's parent.
+    global rootOffset
     mid = n.m//2
-    rightNode = node(isLeaf=n.isLeaf, parent=n.parent, r = n.r, offset=genOffset())
+
+    rightNode = Node(isLeaf=n.isLeaf, r = n.r, offset=allocOffset())
     rightNode.p = n.p[mid:]
     rightNode.m = len(rightNode.p)
 
     n.p = n.p[:mid]
     n.m = len(n.p)
-    n.r = rightNode
-    #node split
+    n.r = rightNode.offset
+    # node split
 
-    newKey = rightNode.p[0]
+    newKey = rightNode.p[0][0]
 
-    if n.parent == None: # n is root, create new root node
-        parent = node(1, [newKey, n.offset], rightNode.offset, False, None, genOffset())
+    if not path: # n is root, create new root node
+        parent = Node(1, [[newKey, n.offset]], rightNode.offset, False, allocOffset())
+        rootOffset = parent.offset
+
     else:
-        parent = readNode(n.parent)
+        parent = readNode(path.pop())
         for i in range(len(parent.p)):
-            if (i == len(parent.p) - 1) and (newKey > parent.p[i][0]): 
+            if (i == len(parent.p) - 1) and (newKey > parent.p[i][0]):
                  # key should be inserted to last key
-                 # change r either
+                 # change r too
                 parent.p.append([newKey, n.offset])
                 parent.r = rightNode.offset
                 break
-            if newKey < parent.p[i][0]:
+            elif newKey < parent.p[i][0]:
                 parent.p.insert(i, [newKey, n.offset])
                 parent.p[i+1][1] = rightNode.offset
                 break
-        if len(parent.p) > N - 1:
-            split(parent)
+        parent.m = len(parent.p)
 
-    modified.append(n, rightNode, parent)
+        if parent.m > N - 1:
+            split(parent, path)     # same path, one level shorter
+
+    for x in (n, rightNode, parent):
+        modified[x.offset] = [x, 'mod']
+
     return
-    
+
 
 # bptree function
-def create(N):
+def create(ifile, N):
+    try:
+        N = int(N)
+    except ValueError:
+        raise ValueError("create: N is not an integer")
+
     with open(ifile, 'wb') as f:
-        f.write(bytes([N]))
+        data = struct.pack('<qqqq', 0, -1, -1, N)
+        f.write(data)
     
-def insert(key, value):
-    with open(ifile, 'r+b') as f:
-        if rootOffset == b'':           #root doesnt exist, tree empty
-            modified.append(node(m = 1, p = [key,value], r = None))
-            return
-        else:
-            root = readNode(rootOffset)
-            targetNode = keyFind(root, key)
-            for i in range(targetNode.m - 1):
-                if targetNode.p[i][0] == key:
-                    print(f"duplicated key. key : {key}, value : {value}")
-                    return
-                if targetNode.p[i][0] < key:
-                    continue
-                else:
-                    split(targetNode)
-            
+def insert(inputFile):
+    with open(inputFile, 'r') as inFile:
+        for line in inFile:
+            try:
+                key, value = map(int, line.strip().split(','))
+            except ValueError:
+                raise ValueError(f"insert: key:{key} value:{value} form is illegal")
+            global rootOffset
+
+            if rootOffset == -1:           #root doesnt exist, tree empty
+
+                # create root
+                root = Node(m = 1, p = [[key,value]], r = -1, offset=allocOffset())
+                modified[root.offset] = [root, 'mod']
+                rootOffset = root.offset
+                return
+            else:
+                root = readNode(rootOffset)
+                path : list = []                        # ancestors of the target leaf, in place of node.parent
+                targetNode = keyFind(root, key, path = path)
+                for i in range(targetNode.m - 1):
+                    if targetNode.p[i][0] == key:
+                        print(f"duplicated key. key : {key}, value : {value}")
+                        return
+                    if targetNode.p[i][0] < key:
+                        continue
+                    else:
+                        split(targetNode, path)
+                
 
 
-def delete(key):...
+def delete(key):
+    #TODO
+    pass
+
 def search(key):
-    root = readNode(ifile, rootOffset)
+    try:
+        key = int(key)
+    except ValueError:
+        raise ValueError("key search: key is not an integer")
+    if rootOffset == -1:
+        return print('NOT FOUND')
     
-def search(start, end):...
+    root = readNode(ifile, rootOffset)
+    keyFind(root, key, printing=True)
+
+    
+def search(start, end):
+    try:
+        start, end = int(start), int(end)
+    except ValueError:
+        raise ValueError("ranged search: start or end is not an integer")
+    if rootOffset == -1:
+        return print('NOT FOUND')
+        
+    root = readNode(ifile, rootOffset)
+    keyFind(root, key = start, end = end, printing=True)
 
 
 
@@ -110,22 +261,31 @@ if len(cmd) < 3 or len(cmd) > 5:
 
 if(cmd[1]) == '-c':
     create(*cmd[2:])
+    exit(0)
+
 ifile = cmd[2]
-with open(ifile, 'r') as f:
+with open(ifile, 'r+b') as f:
     #file meta data
-    newOffset     : int = struct.unpack('<Q', f.read(8))[0]  # 8 byte
-    freeHeadOffset: int = struct.unpack('<Q', f.read(8))[0]  # 8 byte
-    rootOffset   : int = struct.unpack('<Q', f.read(8))[0]  # 8 byte
-    N             : int = struct.unpack('<Q', f.read(8))[0]  # 8 byte, number of child
+    newOffset     : int = struct.unpack('<q', f.read(8))[0]  # 8 byte
+    freeHeadOffset: int = struct.unpack('<q', f.read(8))[0]  # 8 byte
+    rootOffset    : int = struct.unpack('<q', f.read(8))[0]  # 8 byte
+    N             : int = struct.unpack('<q', f.read(8))[0]  # 8 byte, number of child
+    
+    HEADER_SIZE = 32
+    NODE_SIZE = 17 + (N - 1) * 16   # node struct : m(8), isLeaf(1), r(8), *p(16 each)
+    NODE_FORMAT = '<qBq' + (N - 1) * 'qq'
+    PADDING = NODE_SIZE - 8         # freeNode struct : nextOffset(8) + padding to NODE_SIZE
+    FREENODE_FORMAT = f'<q{PADDING}x'
 
-NODE_SIZE = 33 + (N - 1) * 16   # node struct : m, isLeaf, parent, r, *p
-NODE_FORMAT = '<QBQQQ' + (N - 1) * 'QQ'
-modified = []              #list of modified node
+    modified : dict[int, list] = dict()                # dictionary of modified node {offset : [node, 'stat']}
 
-match(cmd[1]):
-    case('-i'): insert(*cmd[2:])
-    case('-d'): delete(*cmd[2:])
-    case('-s'): search(*cmd[2:])
-for i in modified:
-    with open(ifile, 'r+b'):
-            ...
+    match(cmd[1]):
+        case('-i'): insert(*cmd[3:])
+        case('-d'): delete(*cmd[3:])
+        case('-s'): search(*cmd[3:])
+        case('-r'): search(*cmd[3:])
+
+    #write modification to file
+    patch(modified)
+
+
