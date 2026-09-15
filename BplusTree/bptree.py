@@ -1,5 +1,6 @@
 import sys
 import struct
+import os
 
 class Node:
     def __init__(self, m :int = 1, p : list = None, r : int = -1, isLeaf = True, offset : int = None):
@@ -31,6 +32,10 @@ def writeFreeNode(f, freeNode):
         data = struct.pack(FREENODE_FORMAT, freeNode.nextOffset)
         f.write(data)
 def readNode(offset) -> Node:
+        #if node is modified, do not read file
+        if offset in modified:
+            return modified[offset][0]
+        
         f.seek(HEADER_SIZE + offset)
         data = f.read(NODE_SIZE)
         #data read error
@@ -192,35 +197,56 @@ def create(ifile, N):
     with open(ifile, 'wb') as f:
         data = struct.pack('<qqqq', 0, -1, -1, N)
         f.write(data)
-    
+
+def inserter(key, value):
+    global rootOffset
+
+    if rootOffset == -1:           #root doesnt exist, tree empty
+        # create root
+        root = Node(m = 1, p = [[key,value]], r = -1, offset=allocOffset())
+        modified[root.offset] = [root, 'mod']
+        rootOffset = root.offset
+        return
+    else:
+        root = readNode(rootOffset)
+        path : list = []                        # ancestors of the target leaf, in place of node.parent
+        targetNode = keyFind(root, key, path = path)
+        for i in range(targetNode.m):
+            if targetNode.p[i][0] == key:
+                print(f"duplicated key. key : {key}, value : {value}")
+                return
+            elif targetNode.p[i][0] < key:
+                continue
+            else:
+                targetNode.p.insert(i, [key, value])
+                targetNode.m += 1
+                modified[targetNode.offset] = [targetNode, 'mod']
+                if targetNode.m + 1 > N:
+                    split(targetNode, path)
+                    return
+                return
+        # key is biggest
+        targetNode.p.append([key, value])
+        targetNode.m += 1
+        modified[targetNode.offset] = [targetNode, 'mod']
+        if targetNode.m + 1 > N:
+            split(targetNode, path)
+            return
+        return
 def insert(inputFile):
-    with open(inputFile, 'r') as inFile:
-        for line in inFile:
+    #abs path to input file
+    INPUT_CSV = os.path.join(HERE, 'data', inputFile)
+
+    with open(INPUT_CSV, 'r') as inputFile:
+        for line in inputFile:
             try:
                 key, value = map(int, line.strip().split(','))
             except ValueError:
                 raise ValueError(f"insert: key:{key} value:{value} form is illegal")
-            global rootOffset
+            print(key, value, "iterable?")
+            inserter(key, value)
+        return
 
-            if rootOffset == -1:           #root doesnt exist, tree empty
-
-                # create root
-                root = Node(m = 1, p = [[key,value]], r = -1, offset=allocOffset())
-                modified[root.offset] = [root, 'mod']
-                rootOffset = root.offset
-                return
-            else:
-                root = readNode(rootOffset)
-                path : list = []                        # ancestors of the target leaf, in place of node.parent
-                targetNode = keyFind(root, key, path = path)
-                for i in range(targetNode.m - 1):
-                    if targetNode.p[i][0] == key:
-                        print(f"duplicated key. key : {key}, value : {value}")
-                        return
-                    if targetNode.p[i][0] < key:
-                        continue
-                    else:
-                        split(targetNode, path)
                 
 
 
@@ -228,7 +254,7 @@ def delete(key):
     #TODO
     pass
 
-def search(key):
+def keySearch(key):
     try:
         key = int(key)
     except ValueError:
@@ -236,11 +262,11 @@ def search(key):
     if rootOffset == -1:
         return print('NOT FOUND')
     
-    root = readNode(ifile, rootOffset)
+    root = readNode(rootOffset)
     keyFind(root, key, printing=True)
 
     
-def search(start, end):
+def rangedSearch(start, end):
     try:
         start, end = int(start), int(end)
     except ValueError:
@@ -248,7 +274,7 @@ def search(start, end):
     if rootOffset == -1:
         return print('NOT FOUND')
         
-    root = readNode(ifile, rootOffset)
+    root = readNode(rootOffset)
     keyFind(root, key = start, end = end, printing=True)
 
 
@@ -277,14 +303,22 @@ with open(ifile, 'r+b') as f:
     PADDING = NODE_SIZE - 8         # freeNode struct : nextOffset(8) + padding to NODE_SIZE
     FREENODE_FORMAT = f'<q{PADDING}x'
 
+    #file directory absolute path
+    HERE        = os.path.dirname(os.path.abspath(__file__))
+    BPTREE      = os.path.join(HERE, 'bptree.py')
+    INDEX_DAT   = os.path.join(HERE, 'test_index.dat')
+    INPUT_CSV   = os.path.join(HERE, 'data', 'input.csv')
+    DELETE_CSV  = os.path.join(HERE, 'data', 'delete.csv')
     modified : dict[int, list] = dict()                # dictionary of modified node {offset : [node, 'stat']}
 
     match(cmd[1]):
         case('-i'): insert(*cmd[3:])
         case('-d'): delete(*cmd[3:])
-        case('-s'): search(*cmd[3:])
-        case('-r'): search(*cmd[3:])
+        case('-s'): keySearch(*cmd[3:])
+        case('-r'): rangedSearch(*cmd[3:])
 
+    for i in modified:
+        print(i)
     #write modification to file
     patch(modified)
 
