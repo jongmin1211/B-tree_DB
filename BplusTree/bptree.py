@@ -10,13 +10,11 @@ class Node:
         self.isLeaf = isLeaf
         self.offset = offset # self pointer. in memory only : readNode() fills it from the offset
                              # it was asked to seek to, so it is never stored in the file.
-        # no parent pointer. the path from root is tracked by keyFind() and passed to split().
-
+        # no parent pointer. the path from root is tracked by findLeaf() and passed to split().
 class FreeNode:
     def __init__(self, offset, nextOffset = -1):
         self.offset = offset            # in memory only, like Node.offset
-        self.nextOffset = nextOffset    # 8 bytes
-    
+        self.nextOffset = nextOffset    # 8 bytes    
 # file function : readNode, readFreeNode, allocOffset, releaseOffset
 def readFreeNode(offset) -> FreeNode:
         f.seek(HEADER_SIZE + offset)
@@ -72,7 +70,7 @@ def releaseOffset(f, offset): # release offset and make link to linked list of F
         while(True):
             if freeNode.nextOffset == -1:
                 freeNode.nextOffset = offset
-
+# write changing of Node to file
 def patchHeader(f):
         f.seek(0)
         data = struct.pack('<qqqq', newOffset, freeHeadOffset, rootOffset, N)
@@ -84,67 +82,35 @@ def patchNode(f, modified : dict[int, list]):
             releaseOffset(f, node.offset)
         if stat == 'mod':
             writeNode(f, node)
-
 def patch(modified):
         patchHeader(f)
         patchNode(f, modified)
 
-
-
-def keyFind(n :Node, key, end = None, printing = False, path : list = None) -> Node: # find the locate of key and return that node recursively
+def findLeaf(n :Node, key, path :list):
     # path : if given, the offsets of every node visited above the returned leaf are appended
-    #        (root first). split() uses it instead of a parent pointer.
-    if n.isLeaf:
-        # Single Key Search
-        if printing and end == None:
-            exist = 0
-            print(*(i[0] for i in n.p), sep=',')
-            for k,v in n.p:
-                if k==key:
-                    print(v)
-                    exist = 1
-                    break
-            if not exist:
-                print('NOT FOUND')
 
-        # Ranged Search
-        elif printing:
-            while(True):
-                i = 1
-                for k,v in n.p:
+    # find the Node that key should exist
+    if n.isLeaf: return n        
 
-                    # 종료조건
-                    if i == len(n.p):
-                        if k > end: 
-                            break
-                    #key, value 출력
-                    if key <= k <= end:
-                        print(k, v, sep=',')
+    path.append(n)       # remember how we got here, in place of node.parent
 
-                    i+=1
-
-                if n.r != -1:
-                    n = readNode(n.r)
-                else:
-                    break
-
-        return n        # case1 : if n is leaf return the node. path holds its ancestors.
-
-    if printing and end == None:
-        print(*(i[0] for i in n.p), sep=',')
-                  
-    if path is not None:
-        path.append(n.offset)       # remember how we got here, in place of node.parent
-
+    # case2 : if key < tree's key : go left child
     for i in n.p:
-        if key < i[0]: # case2 : if key < tree's key : go left child
-            return keyFind(readNode(i[1]), key, end, printing, path)
-
+        if key < i[0]:
+            return findLeaf(readNode(i[1]), key, path)
+            
     # case3 : key is >= every key in this node : go rightmost child
-    return keyFind(readNode(n.r), key, end, printing, path)
+    return findLeaf(readNode(n.r), key, path)
+
+def search(leaf, key):
+    # if key exist in leaf return value. else return None
+    for k, v in leaf.p:
+        if k == key:
+            return v
+    return None
 
 def split(n :Node, path : list):   # when node overflowed, split node and make parent node, keep left node and create right node.
-    # path : ancestor offsets of n, root first (from keyFind). pop() gives n's parent.
+    # path : ancestor offsets of n, root first (from findLeaf). pop() gives n's parent.
     global rootOffset
     mid = n.m//2
 
@@ -159,16 +125,17 @@ def split(n :Node, path : list):   # when node overflowed, split node and make p
 
     newKey = rightNode.p[0][0]
 
-    if not path: # n is root, create new root node
+    # n is root, create new root node
+    if not path: 
         parent = Node(1, [[newKey, n.offset]], rightNode.offset, False, allocOffset())
         rootOffset = parent.offset
 
     else:
-        parent = readNode(path.pop())
+        parent = readNode(path.pop().offset)
         for i in range(len(parent.p)):
             if (i == len(parent.p) - 1) and (newKey > parent.p[i][0]):
-                 # key should be inserted to last key
-                 # change r too
+                # key should be inserted to last key
+                # change r too
                 parent.p.append([newKey, n.offset])
                 parent.r = rightNode.offset
                 break
@@ -187,18 +154,16 @@ def split(n :Node, path : list):   # when node overflowed, split node and make p
     return
 
 
+
+
 # bptree function
 def create(ifile, N):
-    try:
-        N = int(N)
-    except ValueError:
-        raise ValueError("create: N is not an integer")
-
+    N = int(N)
     with open(ifile, 'wb') as f:
         data = struct.pack('<qqqq', 0, -1, -1, N)
         f.write(data)
 
-def inserter(key, value):
+def _insert(key, value):
     global rootOffset
 
     if rootOffset == -1:           #root doesnt exist, tree empty
@@ -207,10 +172,11 @@ def inserter(key, value):
         modified[root.offset] = [root, 'mod']
         rootOffset = root.offset
         return
+    
     else:
         root = readNode(rootOffset)
         path : list = []                        # ancestors of the target leaf, in place of node.parent
-        targetNode = keyFind(root, key, path = path)
+        targetNode = findLeaf(root, key, path)
         for i in range(targetNode.m):
             if targetNode.p[i][0] == key:
                 print(f"duplicated key. key : {key}, value : {value}")
@@ -236,48 +202,69 @@ def inserter(key, value):
 def insert(inputFile):
     #abs path to input file
     INPUT_CSV = os.path.join(HERE, 'data', inputFile)
-
     with open(INPUT_CSV, 'r') as inputFile:
         for line in inputFile:
-            try:
-                key, value = map(int, line.strip().split(','))
-            except ValueError:
-                raise ValueError(f"insert: key:{key} value:{value} form is illegal")
-            print(key, value, "iterable?")
-            inserter(key, value)
-        return
+            key, value = map(int, line.strip().split(','))
+            _insert(key, value)
+        return        
 
-                
-
-
-def delete(key):
-    #TODO
+def merge():
     pass
 
+    
+def delete(deleteFile):
+    #TODO
+    DELETE_CSV = os.path.join(HERE, 'data', deleteFile)
+    with open (DELETE_CSV, 'r') as deleteFile:
+        for line in deleteFile:
+            try:
+                key = int(line.strip())
+            except ValueError:
+                raise ValueError(f"delete: key:{key} form is illegal")
+            delete(key)
+        return
+
 def keySearch(key):
-    try:
-        key = int(key)
-    except ValueError:
-        raise ValueError("key search: key is not an integer")
+    key = int(key)
+
     if rootOffset == -1:
         return print('NOT FOUND')
     
     root = readNode(rootOffset)
-    keyFind(root, key, printing=True)
+    path = []
+    v = search(findLeaf(root, key, path), key)
+    for n in path:
+        print(*(i[0] for i in n.p), sep=',')
+    print("NOT FOUND" if v is None else v)
 
     
 def rangedSearch(start, end):
-    try:
-        start, end = int(start), int(end)
-    except ValueError:
-        raise ValueError("ranged search: start or end is not an integer")
+    start, end = map(int, (start,end))
+
     if rootOffset == -1:
         return print('NOT FOUND')
-        
+    
     root = readNode(rootOffset)
-    keyFind(root, key = start, end = end, printing=True)
 
+    leaf = findLeaf(root, start, path = [])
 
+    while(True):
+        i = 1
+        for k,v in leaf.p:
+            # 종료조건
+            if i == len(leaf.p):
+                if k > end: 
+                    break
+            #key, value 출력
+            if start <= k <= end:
+                print(k, v, sep=',')
+
+            i+=1
+
+        if leaf.r != -1:
+            leaf = readNode(leaf.r)
+        else:
+            break
 
 
 #main
