@@ -1,6 +1,7 @@
 import sys
 import struct
 import os
+from math import *
 
 class Node:
     def __init__(self, m :int = 1, p : list = None, r : int = -1, isLeaf = True, offset : int = None):
@@ -64,14 +65,22 @@ def allocOffset() -> int :
         freeHeadOffset = freeNode.nextOffset
         return freeNode.offset
 def releaseOffset(f, offset): # release offset and make link to linked list of FreeNode.
+    global freeHeadOffset
+
     if freeHeadOffset == -1:  
         freeHeadOffset = offset
-        writeFreeNode(offset)       
+        writeFreeNode(f, FreeNode(offset))       
     else:
         freeNode = readFreeNode(freeHeadOffset)
         while(True):
             if freeNode.nextOffset == -1:
                 freeNode.nextOffset = offset
+                writeFreeNode(f, freeNode)
+                writeFreeNode(f, FreeNode(offset))
+                break
+            else:
+                freeNode = readFreeNode(freeNode.nextOffset)
+                writeFreeNode(f, FreeNode(offset))
 # write changing of Node to file
 def patchHeader(f):
         f.seek(0)
@@ -85,8 +94,8 @@ def patchNode(f, modified : dict[int, list]):
         if stat == 'mod':
             writeNode(f, node)
 def patch(modified):
-        patchHeader(f)
         patchNode(f, modified)
+        patchHeader(f)
 
 def findLeaf(n :Node, key, path :list = None, trace :list[Node, int] = None):
     # path : if given, the offsets of every node visited above the returned leaf are appended
@@ -107,7 +116,7 @@ def findLeaf(n :Node, key, path :list = None, trace :list[Node, int] = None):
             return findLeaf(readNode(entry[1]), key, path, trace)
             
     # case3 : key is >= every key in this node : go rightmost child
-    if trace is not None: trace.append([n, n.m-1])
+    if trace is not None: trace.append([n, n.m])
     return findLeaf(readNode(n.r), key, path, trace)
 
 def search(leaf, key):
@@ -132,6 +141,10 @@ def split(n :Node, path : list):   # when node overflowed, split node and make p
     # node split
 
     newKey = rightNode.p[0][0]
+    if not n.isLeaf:
+        n.r = rightNode.p.pop(0)[1]
+        rightNode.m -= 1
+
 
     # n is root, create new root node
     if not path: 
@@ -187,7 +200,7 @@ def _insert(key, value):
         targetNode = findLeaf(root, key, path)
         for i in range(targetNode.m):
             if targetNode.p[i][0] == key:
-                print(f"duplicated key. key : {key}, value : {value}")
+                # if duplicated key, do not modify, return
                 return
             elif targetNode.p[i][0] < key:
                 continue
@@ -217,55 +230,102 @@ def insert(inputFile):
         return        
 
 def distribute(parent, left, right, n, i):
-    if left.m - 1 > (N-1)//2:
-        n.p.append(left.p.pop())
+    minKeys = ceil((N/2)-1) if n.isLeaf else ceil(N/2)-1
+
+    if left and left.m - 1 >= minKeys:
+        if n.isLeaf:
+            n.p.insert(0, left.p.pop())
+            parent.p[i-1][0] = n.p[0][0]
+        # 중간 노드일 때 부모를 통한 스핀
+        else:
+            n.p.insert(0, [parent.p[i-1][0], left.r])
+            left.r = left.p[-1][1]
+            parent.p[i-1][0] = left.p.pop()[0]
+
         n.m     += 1
         left.m  -=1
-        parent.p[i-1][0] = n.p[0][0]
-
         modified[parent.offset] = [parent, 'mod']
         modified[left.offset]   = [left, 'mod']
         modified[n.offset]      = [n, 'mod']
-    elif right.m - 1 > (N-1)//2:
-        right.p.append(right.p.pop(0))
-        n.m     += 1
-        right.m  -=1
-        parent.p[i][0] = right.p[0][0]
+    elif right and right.m - 1 >= minKeys:
+        if n.isLeaf:
+            n.p.append(right.p.pop(0))
+            parent.p[i][0] = right.p[0][0]
 
+        else:
+            n.p.append([parent.p[i][0], n.r])
+            n.r = right.p[0][1]
+            parent.p[i][0] = right.p.pop(0)[0]
+
+        n.m     += 1
+        right.m -= 1
         modified[parent.offset] = [parent, 'mod']
         modified[right.offset]  = [right, 'mod']
         modified[n.offset]      = [n, 'mod']
     else:
-        print('bug????')
+        raise RuntimeWarning(f"unexpected node in distribute left : {left}, right : {right}, n : {n}")
 def merge(parent, left, right, i, rightmost):
+    global rootOffset
+
+    # i is parent.p's index of right node
     if rightmost:
-            left.m += right.m
-            left.p += right.p
-            left.r = right.r
-            parent.r = left.offset
-            parent.p.pop() # pop the seperate key
-            parent.m -= 1
+            if left.isLeaf:
+                left.m += right.m
+                left.p += right.p
+                left.r = right.r
+                parent.r = left.offset
+                parent.p.pop() # pop the seperate key
+                parent.m -= 1
+            else:
+                sepKey = parent.p.pop()[0]
+                parent.m -= 1
+
+                left.p.append([sepKey, left.r])
+                left.p += right.p
+                left.r = right.r
+
+                left.m += right.m + 1
+
+                parent.r = left.offset
 
             modified[parent.offset] = [parent, 'mod']
             modified[left.offset]   = [left, 'mod']
             modified[right.offset]   = [right, 'del']
     else:
-            left.m += right.m
-            left.p += right.p
-            left.r = right.r
-            parent.p[i][1] = left.offset
-            parent.p.pop(i-1)
-            parent.m -= 1
+            if left.isLeaf:    
+                left.m += right.m
+                left.p += right.p
+                left.r = right.r
+                parent.p[i][1] = left.offset
+                parent.p.pop(i-1)
+                parent.m -= 1
+            else:
+                sepKey = parent.p.pop(i-1)[0]
+                left.p.append([sepKey, left.r])
+                left.p += right.p
+                left.r = right.r
+
+                left.m += right.m +1
+
+                parent.p[i-1][1] = left.offset
+                parent.m -= 1  
 
             modified[parent.offset] = [parent, 'mod']
             modified[left.offset]   = [left, 'mod']
             modified[right.offset]   = [right, 'del']  
+
+    # 루트가 비면 루트의 rightchild가 새 루트
+    if rootOffset == parent.offset and parent.m == 0:
+        modified[rootOffset] = [readNode(rootOffset), 'del']
+        rootOffset = parent.r
 def rebalance(n, trace):
+    global rootOffset
+
     #if leaf is root, stop
-    if rootOffset == n.offset:
+    if not trace:
         return
     
-    if n.m < (N-1)//2:
+    if n.m < ceil((N-1)/2):
         parent, i = trace.pop()
         left = readNode(parent.p[i-1][1]) if i > 0 else None
         if i + 1 < parent.m:
@@ -281,37 +341,39 @@ def rebalance(n, trace):
             right = readNode(parent.r)
         else: right = None
 
-
-        if left and left.m + n.m < N:
+        extra = 0 if n.isLeaf else 1
+        if left and left.m + n.m + extra < N:
             # leaf is rightmost child
             if n.offset == parent.r:
                 merge(parent, left, n, i, True)
             else:
                 merge(parent, left, n, i, False)
 
-        elif right and right.m + n.m < N:
+        elif right and right.m + n.m + extra < N:
             # leaf's right sibling is rightmost child
             if right.offset == parent.r:
-                merge(parent, n, right, i, True)
+                merge(parent, n, right, i+1, True)
             else:
-                merge(parent, n, right, i, False)
+                merge(parent, n, right, i+1, False)
         else: distribute(parent, left, right, n, i)
 
-        if parent.m < (N-1)//2:
+        if parent.m < ceil((N-1)/2):
             rebalance(parent, trace)
-    else:
-        return print("buggg? 301 line")
 
 
 def _delete(key):
 
     leaf, trace = findLeaf(readNode(rootOffset), key, trace=[])
-    parent, i = trace[-1]
-    leaf.p.pop(i)
-    leaf.m -= 1
+    for index,(k,v) in enumerate(leaf.p):
+        if k == key:
+            leaf.p.pop(index)
+            leaf.m -= 1
+            break
+    else:
+        # 없는 키
+        return
     modified[leaf.offset] = [leaf, 'mod']
-
-    rebalance(leaf, trace)
+    return rebalance(leaf, trace)
 
 
 
@@ -351,22 +413,19 @@ def rangedSearch(start, end):
     leaf = findLeaf(root, start, path = [])
 
     while(True):
-        i = 1
         for k,v in leaf.p:
-            # 종료조건
-            if i == len(leaf.p):
-                if k > end: 
-                    break
+            # 종료조건 : key > end
+            if k > end: 
+                return
             #key, value 출력
-            if start <= k <= end:
+            if k >= start:
                 print(k, v, sep=',')
 
-            i+=1
 
-        if leaf.r != -1:
-            leaf = readNode(leaf.r)
-        else:
+        if leaf.r == -1:
             break
+        leaf = readNode(leaf.r)
+            
 
 
 
@@ -407,8 +466,6 @@ with open(ifile, 'r+b') as f:
         case('-s'): keySearch(*cmd[3:])
         case('-r'): rangedSearch(*cmd[3:])
 
-    for i in modified:
-        print(i)
     #write modification to file
     patch(modified)
 
