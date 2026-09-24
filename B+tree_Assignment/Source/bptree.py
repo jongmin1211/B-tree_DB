@@ -478,93 +478,6 @@ def rangedSearch(start, end):
         leaf = readNode(leaf.r)
 
 
-# debug : walk down from the root and draw the whole tree, e.g.
-#            [50]
-#           /    \
-#      [20|35]   [70]
-#      /  |  \   /  \
-#    ...
-# internal nodes are drawn as [key|key], leaves as (key:value key:value)
-def printTree(maxWidth=200):
-    if rootOffset == -1:
-        print("empty tree")
-        return
-
-    gap = 3  # blank columns between two sibling blocks
-
-    # walk down from the root. a parent is always appended before its children,
-    # so going through this list backwards means every child is drawn first.
-    order = []
-    stack = [rootOffset]
-    while stack:
-        offset = stack.pop()
-        node = readNode(offset)
-        order.append((offset, node))
-        if not node.isLeaf:
-            # p holds [key, left child], r is the rightmost child
-            stack += [c for _, c in node.p] + [node.r]
-
-    blocks = {}  # offset -> (lines, width, center) ; center is where the parent connects
-    for offset, node in reversed(order):
-        if node.isLeaf:
-            label = "(" + " ".join(f"{k}:{v}" for k, v in node.p) + ")"
-            blocks[offset] = ([label], len(label), len(label) // 2)
-            continue
-
-        label = "[" + "|".join(str(k) for k, _ in node.p) + "]"
-        children = [blocks[c] for _, c in node.p] + [blocks[node.r]]
-
-        # lay the children out side by side, remembering each one's connector column
-        centers = []
-        column = 0
-        for lines, width, center in children:
-            centers.append(column + center)
-            column += width + gap
-        childWidth = column - gap
-
-        childLines = []
-        for row in range(max(len(lines) for lines, _, _ in children)):
-            line = ""
-            for lines, width, _ in children:
-                piece = lines[row] if row < len(lines) else ""
-                line += piece.ljust(width) + " " * gap
-            childLines.append(line.rstrip())
-
-        # centre the label over the span its children occupy
-        start = max(0, (centers[0] + centers[-1]) // 2 - len(label) // 2)
-        center = start + len(label) // 2
-
-        # one connector row : / to the left, \ to the right, | straight down
-        connector = [" "] * max(childWidth, center + 1)
-        for childCenter in centers:
-            connector[childCenter] = (
-                "|"
-                if childCenter == center
-                else ("/" if childCenter < center else "\\")
-            )
-
-        lines = [" " * start + label, "".join(connector).rstrip()] + childLines
-        blocks[offset] = (lines, max(len(line) for line in lines), center)
-
-    lines, width, _ = blocks[rootOffset]
-    if width <= maxWidth:
-        print("\n".join(lines))
-        return
-
-    # too wide to draw side by side : fall back to an indented listing
-    print(f"(tree is {width} columns wide, printing indented instead)")
-    stack = [(rootOffset, 0)]
-    while stack:
-        offset, depth = stack.pop()
-        node = readNode(offset)
-        label = blocks[offset][0][0].strip() if node.isLeaf else None
-        if label is None:
-            label = "[" + "|".join(str(k) for k, _ in node.p) + "]"
-        print("   " * depth + ("\\_ " if depth else "") + label)
-        if not node.isLeaf:
-            children = [c for _, c in node.p] + [node.r]
-            stack += [(c, depth + 1) for c in reversed(children)]
-
 
 # main
 cmd = sys.argv
@@ -603,8 +516,6 @@ with open(ifile, "r+b") as f:
             keySearch(*cmd[3:])
         case "-r":
             rangedSearch(*cmd[3:])
-        case "-p":
-            printTree()
 
     # write modification to file
     patch(modified)
