@@ -13,9 +13,7 @@ class Node:
         self.r = r  # a pointer to the rightmost child node or right sibling node. if rightmost leaf node : -1
         self.isLeaf = isLeaf
         self.offset = offset  # self pointer. in memory only : readNode() fills it from the offset
-        
-        # it was asked to seek to, so it is never stored in the file.
-        # no parent pointer. the path from root is tracked by findLeaf() and passed to split().
+
 
 
 class FreeNode:
@@ -365,7 +363,8 @@ def rebalance(n, trace):
     # if leaf is root, stop
     if not trace:
         return
-    
+
+    # key limit
     minKeys = ceil((N - 1) / 2) if n.isLeaf else ceil(N / 2) - 1
 
     if n.m < minKeys:
